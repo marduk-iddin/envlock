@@ -1,8 +1,7 @@
 //! envlock — store env vars in the macOS Keychain and inject them
 //! only into the environment of a single child process.
 //!
-//!   envlock set    [--require-passphrase] <ns> VAR [VAR...]
-//!                                         store values (hidden prompt)
+//!   envlock set    <ns> VAR [VAR...]     store values (hidden prompt)
 //!   envlock run    <ns> [<ns>...] -- CMD [ARGS...]
 //!   envlock list   <ns>                  print variable NAMES only
 //!   envlock unset  <ns> VAR [VAR...]     remove variables
@@ -24,7 +23,7 @@ use store::{service_name, valid_namespace, valid_var_name, Vars};
 
 const USAGE: &str = "\
 usage:
-  envlock set    [--require-passphrase] <namespace> VAR [VAR...]
+  envlock set    <namespace> VAR [VAR...]
   envlock run    <namespace> [<namespace>...] -- <command> [args...]
   envlock list   <namespace>
   envlock unset  <namespace> VAR [VAR...]
@@ -73,9 +72,6 @@ fn load_vars(ns: &str) -> Result<Option<Vars>, String> {
 // ---------- set ----------
 
 fn cmd_set(args: &[String]) -> Result<ExitCode, String> {
-    let require_passphrase = args.first().map(String::as_str) == Some("--require-passphrase");
-    let args = if require_passphrase { &args[1..] } else { args };
-
     let (ns, names) = args
         .split_first()
         .ok_or(format!("set: namespace required\n{USAGE}"))?;
@@ -98,15 +94,8 @@ fn cmd_set(args: &[String]) -> Result<ExitCode, String> {
         }
         vars.insert(name.clone(), value);
     }
-    keychain::write(&service_name(ns), &store::serialize(&vars), require_passphrase)?;
-    if require_passphrase {
-        eprintln!(
-            "envlock: stored {} variable(s) in {ns} (Touch ID / passcode required on every read)",
-            names.len()
-        );
-    } else {
-        eprintln!("envlock: stored {} variable(s) in {ns}", names.len());
-    }
+    keychain::write(&service_name(ns), &store::serialize(&vars))?;
+    eprintln!("envlock: stored {} variable(s) in {ns}", names.len());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -179,9 +168,7 @@ fn cmd_unset(args: &[String]) -> Result<ExitCode, String> {
         keychain::remove(&service_name(ns))?;
         eprintln!("envlock: namespace {ns} is now empty and was deleted");
     } else {
-        // false: never touch an existing ACL — a plain `unset` must not
-        // silently undo a namespace hardened with `set --require-passphrase`.
-        keychain::write(&service_name(ns), &store::serialize(&vars), false)?;
+        keychain::write(&service_name(ns), &store::serialize(&vars))?;
     }
     Ok(ExitCode::SUCCESS)
 }

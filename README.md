@@ -11,8 +11,11 @@ cargo build --release
 cp target/release/envlock /usr/local/bin/   # or ~/.local/bin
 ```
 
-Dependencies: `security-framework` (Apple's official Rust bindings for
-Security.framework), `rpassword` (hidden input), `serde_json`.
+Dependencies: `security-framework` / `security-framework-sys` / `core-foundation`
+(Apple's official Rust bindings for Security.framework — the low-level
+`-sys`/`core-foundation` crates are needed directly to attach a custom
+`SecAccessControl` ACL, which the high-level wrapper doesn't expose),
+`rpassword` (hidden input), `serde_json`.
 
 ## Usage
 
@@ -22,6 +25,10 @@ envlock set ddsc MONGO_URI
 
 # Multiple variables in one namespace
 envlock set ddsc MONGO_URI REDIS_URL
+
+# Require Touch ID / device passcode on EVERY read, no "Always Allow"
+# possible — see Security notes below for why you want this
+envlock set --require-passphrase ddsc MONGO_URI
 
 # Run a command with secrets in its env — one Keychain prompt per run
 envlock run ddsc -- mongosh
@@ -48,30 +55,39 @@ envlock delete ddsc
 
 ## Security notes (the honest ones)
 
-1. **`envlock set` silently trusts itself — you must revoke that by
-   hand.** When `set` creates a Keychain item, macOS gives the
+1. **Plain `envlock set` silently trusts itself.** When `set` creates a
+   Keychain item without `--require-passphrase`, macOS gives the
    *creating binary* automatic "Always Allow" access with no dialog
    ever shown — this is default Keychain ACL behavior, not something
-   envlock asks for. So the first `envlock run` after a `set` will
-   read the secret **without prompting**, which looks like the control
-   model isn't working. It is — it just started in the wrong state.
-   After each `set`, open Keychain Access.app, find `envlock-<ns>`,
-   go to **Access Control**, remove envlock from the trusted-apps list,
-   and select "Confirm before allowing access." Only then does `run`
-   show a real Allow/Always Allow/Deny dialog per invocation.
-2. **Never click "Always Allow"** in that dialog once it does appear.
-   The entire control model rests on every access requiring your
-   confirmation. "Allow" — yes, "Always Allow" — never (it puts you
-   right back into the silent-trust state from note 1).
-3. The child process sees the secrets in its own environment. Any
+   envlock asks for. So `envlock run` after a plain `set` reads the
+   secret **without prompting**, which looks like the control model
+   isn't working. It is — it just started in the wrong state.
+2. **Use `envlock set --require-passphrase <ns> VAR...` to fix that.**
+   It attaches a `SecAccessControl` (Touch ID / device passcode) to the
+   item instead of the legacy ACL. Items protected this way have no
+   concept of a trusted-app list at all — every read prompts, every
+   time, permanently, with no "Always Allow" button to ever click by
+   mistake. This is the recommended way to store anything sensitive.
+   It only takes effect on a *new* item; re-running plain `set` on an
+   already-hardened namespace never downgrades it (the ACL is only
+   touched when `--require-passphrase` is passed).
+3. If you didn't use the flag and want the same guarantee after the
+   fact without recreating the item: open Keychain Access.app, find
+   `envlock-<ns>`, go to **Access Control**, remove envlock from the
+   trusted-apps list, and select "Confirm before allowing access."
+   That produces a legacy Allow/Always Allow/Deny dialog instead of the
+   Touch ID sheet — functionally weaker, since "Always Allow" still
+   exists as an option to click. Never click it.
+4. The child process sees the secrets in its own environment. Any
    process able to run `env` can read them — that's a property of any
    secret injector, not just this one.
-4. Secrets live briefly in envlock's memory between the Keychain read
+5. Secrets live briefly in envlock's memory between the Keychain read
    and the exec. Memory isn't zeroed (no `zeroize`) — an acceptable
    trade-off for a local machine; add zeroize if you want a more
    paranoid mode.
-5. The Keychain item is created with the default ACL. Inspect or
-   tighten it in Keychain Access.app (search for `envlock-<ns>`).
+6. Without `--require-passphrase`, the Keychain item is created with
+   the default ACL. Inspect or tighten it in Keychain Access.app
+   (search for `envlock-<ns>`).
 
 ## Testing
 
